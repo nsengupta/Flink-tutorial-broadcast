@@ -4,9 +4,10 @@ import org.apache.flink.api.common.functions.{BroadcastVariableInitializer, Rich
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.scala._
 import org.apache.flink.api.java.io.CsvReader
-import org.apache.flink.api.scala.ExecutionEnvironment
+import org.apache.flink.api.scala.{DataSet, ExecutionEnvironment}
 import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
+import org.apache.flink.util.Collector
 import org.joda.time.DateTime
 import org.joda.time.format.{DateTimeFormat, DateTimeFormatter}
 import scala.collection.breakOut
@@ -21,7 +22,7 @@ import scala.collection.JavaConverters._
  */
 
 case class HVACData(
-     DateTimeOfReading: DateTime,actualTemp: Int,targetTemp: Int,
+     dateOfReading: String, timeOfReading: String ,actualTemp: Int,targetTemp: Int,
      systemID: Int, systemAge: Int, buildingID: Int) {
 
   override def canEqual(a: Any) = a.isInstanceOf[HVACData]
@@ -45,7 +46,7 @@ case class BuildingInformation(buildingID: Int, buildingManager: String, buildin
 
 object UndefinedBuildingInformation extends BuildingInformation(-1,"UnknownManager",-1,"UnknownProduct","UnknownCountry")
 
-case class EnhancedHVACTempReading(buildingID: Int, rangeOfTemp: String, extremeIndicator: Boolean,country: String, productID: String,buildingAge: Int, buildingManager: String)
+case class EnhancedHVACTempReading(buildingID: Int, rangeOfTemp: String, extremeIndicator: Int,country: String, productID: String,buildingAge: Int, buildingManager: String)
 
 object HVACReadingsAnalysis {
 
@@ -54,41 +55,66 @@ object HVACReadingsAnalysis {
   def main(args: Array[String]): Unit = {
 
     val envDefault = ExecutionEnvironment.getExecutionEnvironment
+    val buildingsBroadcastSet = prepareBuildingInfoSet(envDefault,"./SensorFiles/building.csv")
 
-    val buildingsBroadcastSet =
-      envDefault
-        .fromElements(readBuildingInfo(envDefault,"./SensorFiles/building.csv"))
+    val hvacDataSetFromFile = readHVACReadings(envDefault,"./SensorFiles/HVAC.csv")
 
-    val hvacStream = readHVACReadings(envDefault,"./SensorFiles/HVAC.csv")
-
-    hvacStream
+    val joinedBuildingHvacReadings = hvacDataSetFromFile
       .map(new HVACToBuildingMapper)
       .withBroadcastSet(buildingsBroadcastSet,"buildingData")
-      .writeAsCsv("./hvacTemp.csv")
+
+
+    /*val  extremeTemperaturesRecordedByCountry = joinedBuildingHvacReadings
+      .filter(reading => reading.rangeOfTemp == "HOT" || reading.rangeOfTemp == "COLD")
+      .groupBy("country")
+      .reduceGroup(nextGroup => {
+            val asList = nextGroup.toList
+        (asList.head.country,asList.size)
+      })
+      .writeAsCsv("./countrywiseTempRange.csv")*/
+
+    val hvacDevicePerformance =
+      joinedBuildingHvacReadings
+      .map(reading => (reading.productID,reading.extremeIndicator))
+      .filter(e => (e._2 == 1))    // 1 == Extreme Temperature observed
+      .groupBy(0)                  // ProductID
+      .reduceGroup(nextGroup => {
+            val asList = nextGroup.toList
+            (asList.head._1,asList.size)
+    })
+    .writeAsCsv("./hvacDevicePerformance.csv")
 
     envDefault.execute("HVAC Simulation")
 
   }
 
-  private def readBuildingInfo(env: ExecutionEnvironment, inputPath: String) = {
+  private def prepareBuildingInfoSet(env: ExecutionEnvironment, inputPath: String): DataSet[BuildingInformation] = {
 
-    Source.fromFile(inputPath).getLines.drop(1).map(datum => {
+     val inputDataFromFile =
+       Source
+        .fromFile(inputPath)
+        .getLines
+        .drop(1)
+        .map(datum => {
 
-      val fields = datum.split(",")
-      val building =
-        BuildingInformation(
-          fields(0).toInt,     // buildingID
-          fields(1),           // buildingManager
-          fields(2).toInt,     // buildingAge
-          fields(3),           // productID
-          fields(4)            // Country
-        )
-    }).toList
+           val fields = datum.split(",")
+
+          BuildingInformation(
+            fields(0).toInt,     // buildingID
+            fields(1),           // buildingManager
+            fields(2).toInt,     // buildingAge
+            fields(3),           // productID
+            fields(4)            // Country
+          )
+        })
+
+     env.fromCollection(inputDataFromFile.toList)
   }
 
-  private def readHVACReadings(env: ExecutionEnvironment, inputPath: String) = {
+  private def readHVACReadings(env: ExecutionEnvironment, inputPath: String): DataSet[HVACData] = {
 
-      env.readTextFile(inputPath).map(datum => {
+      env.readCsvFile[HVACData](inputPath,ignoreFirstLine = true)
+        /*.map(datum => {
 
         println(s"next datum from HVAC: $datum")
 
@@ -101,7 +127,7 @@ object HVACReadingsAnalysis {
           fields(5).toInt,     // systemAge
           fields(6).toInt      // buildingID
         )
-      })
+      })*/
 
   }
 
@@ -127,11 +153,8 @@ object HVACReadingsAnalysis {
             }
           }
         )
-
-//      allBuildingDetails =
-//        extractedFromBroadcastVariable.asInstanceOf[List[BuildingInformation]]
-//          .foldLeft(Map[Int,BuildingInformation]())((accu,elem) => accu + (elem.buildingID -> elem))
     }
+
     override def map(nextReading: HVACData): EnhancedHVACTempReading = {
       val buildingDetails = allBuildingDetails.getOrElse(nextReading.buildingID,UndefinedBuildingInformation)
 
@@ -139,9 +162,9 @@ object HVACReadingsAnalysis {
 
       val (rangeOfTempRecorded,isExtremeTempRecorded) =
 
-        if (difference > 5 )        ("COLD",true)
-          else if (difference < 5)  ("HOT",true)
-                else                ("NORMAL",false)
+        if (difference > 5 )        ("COLD",  1)
+          else if (difference < 5)  ("HOT",   1)
+                else                ("NORMAL",0)
 
       EnhancedHVACTempReading(
         nextReading.buildingID,

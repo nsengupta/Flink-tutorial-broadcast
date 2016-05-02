@@ -64,14 +64,14 @@ object HVACReadingsAnalysis {
       .withBroadcastSet(buildingsBroadcastSet,"buildingData")
 
 
-    /*val  extremeTemperaturesRecordedByCountry = joinedBuildingHvacReadings
+    val  extremeTemperaturesRecordedByCountry = joinedBuildingHvacReadings
       .filter(reading => reading.rangeOfTemp == "HOT" || reading.rangeOfTemp == "COLD")
       .groupBy("country")
       .reduceGroup(nextGroup => {
             val asList = nextGroup.toList
         (asList.head.country,asList.size)
       })
-      .writeAsCsv("./countrywiseTempRange.csv")*/
+      .writeAsCsv("./countrywiseTempRange.csv")
 
     val hvacDevicePerformance =
       joinedBuildingHvacReadings
@@ -114,21 +114,6 @@ object HVACReadingsAnalysis {
   private def readHVACReadings(env: ExecutionEnvironment, inputPath: String): DataSet[HVACData] = {
 
       env.readCsvFile[HVACData](inputPath,ignoreFirstLine = true)
-        /*.map(datum => {
-
-        println(s"next datum from HVAC: $datum")
-
-        val fields = datum.split(",")
-        HVACData(
-          new DateTime(incomingFormat.parseMillis(fields(0) + " " + fields(1))), // dateTimeOfReading
-          fields(2).toInt,   // actualTemp
-          fields(3).toInt,   // targetTemp
-          fields(4).toInt,     // systemID
-          fields(5).toInt,     // systemAge
-          fields(6).toInt      // buildingID
-        )
-      })*/
-
   }
 
   class HVACToBuildingMapper
@@ -137,7 +122,6 @@ object HVACReadingsAnalysis {
     var allBuildingDetails: Map[Int, BuildingInformation] = _
 
     override def open(configuration: Configuration): Unit = {
-
       allBuildingDetails =
         getRuntimeContext
         .getBroadcastVariableWithInitializer(
@@ -162,6 +146,7 @@ object HVACReadingsAnalysis {
 
       val (rangeOfTempRecorded,isExtremeTempRecorded) =
 
+        // Permissible deviation of temperatures is 5 degrees
         if (difference > 5 )        ("COLD",  1)
           else if (difference < 5)  ("HOT",   1)
                 else                ("NORMAL",0)
@@ -176,6 +161,5 @@ object HVACReadingsAnalysis {
         buildingDetails.buildingManager
       )
     }
-
   }
 }

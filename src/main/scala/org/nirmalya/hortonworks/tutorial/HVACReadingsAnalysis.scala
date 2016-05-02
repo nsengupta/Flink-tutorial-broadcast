@@ -63,26 +63,21 @@ object HVACReadingsAnalysis {
       .map(new HVACToBuildingMapper)
       .withBroadcastSet(buildingsBroadcastSet,"buildingData")
 
-
     val  extremeTemperaturesRecordedByCountry = joinedBuildingHvacReadings
       .filter(reading => reading.rangeOfTemp == "HOT" || reading.rangeOfTemp == "COLD")
-      .groupBy("country")
-      .reduceGroup(nextGroup => {
-            val asList = nextGroup.toList
-        (asList.head.country,asList.size)
-      })
+      .map(e => (e.country,1))
+      .groupBy(0)
+      .sum(1)
       .writeAsCsv("./countrywiseTempRange.csv")
 
     val hvacDevicePerformance =
       joinedBuildingHvacReadings
       .map(reading => (reading.productID,reading.extremeIndicator))
       .filter(e => (e._2 == 1))    // 1 == Extreme Temperature observed
+      .map(e => (e._1,1))
       .groupBy(0)                  // ProductID
-      .reduceGroup(nextGroup => {
-            val asList = nextGroup.toList
-            (asList.head._1,asList.size)
-    })
-    .writeAsCsv("./hvacDevicePerformance.csv")
+      .sum(1)
+      .writeAsCsv("./hvacDevicePerformance.csv")
 
     envDefault.execute("HVAC Simulation")
 
